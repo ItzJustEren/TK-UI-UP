@@ -278,6 +278,45 @@ async def send_config_to_node(node_id: str, uuid: str, link: dict) -> bool:
         logger.warning(f"send_config_to_node error: {e}")
         return False
 
+# ── Link Management Functions ──────────────────────────────────────────────
+async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expires_at: str | None = None, note: str = "", sub_id: str | None = None, protocol: str = "vless-ws", fingerprint: str = "chrome", alpn: str = "", port: int = 443, ip_limit: int = 0, speed_limit_bytes: int = 0, node_id: str | None = None) -> tuple[str, dict]:
+    if protocol not in ("vless-ws", "xhttp-packet-up", "xhttp-stream-up"):
+        protocol = "vless-ws"
+    fingerprint = (fingerprint or "chrome").strip().lower()
+    if fingerprint not in ("chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"):
+        fingerprint = "chrome"
+    uid = generate_uuid()
+    async with LINKS_LOCK:
+        LINKS[uid] = {
+            "label": (label or "لینک جدید").strip()[:60] or "لینک جدید",
+            "limit_bytes": max(0, limit_bytes),
+            "used_bytes": 0,
+            "created_at": datetime.now().isoformat(),
+            "active": True,
+            "expires_at": expires_at,
+            "note": (note or "").strip()[:200],
+            "is_default": False,
+            "sub_id": sub_id,
+            "protocol": protocol,
+            "fingerprint": fingerprint,
+            "alpn": (alpn or "").strip()[:100],
+            "port": port,
+            "ip_limit": max(0, ip_limit),
+            "speed_limit_bytes": max(0, speed_limit_bytes),
+            "node_id": node_id,
+        }
+    if sub_id:
+        async with SUBS_LOCK:
+            if sub_id in SUBS:
+                ids = SUBS[sub_id].setdefault("link_ids", [])
+                if uid not in ids:
+                    ids.append(uid)
+    if node_id:
+        await send_config_to_node(node_id, uid, LINKS[uid])
+    asyncio.create_task(save_state())
+    log_activity("link", f"کانفیگ «{LINKS[uid]['label']}» ساخته شد", "ok")
+    return uid, LINKS[uid]
+
 # ── In-memory state ───────────────────────────────────────────────────────────
 connections: dict = {}
 stats = {"total_bytes": 0, "total_requests": 0, "total_errors": 0, "start_time": time.time()}
@@ -366,19 +405,20 @@ async def startup():
     timeout = httpx.Timeout(30.0, connect=10.0)
     http_client = httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True)
     await load_state()
+    # ✅ ربات را اینجا شروع کن تا از خطای واردات حلقوی جلوگیری شود
+    from telegram_bot import start_bot as _tg_start_bot
     await _tg_start_bot()
     log_activity("system", "سرور راه‌اندازی شد", "ok")
     logger.info(f"Tk-Ui v10 started on port {CONFIG['port']}")
 
 @app.on_event("shutdown")
 async def shutdown():
-    await save_state()
+    # ✅ ربات را اینجا متوقف کن
+    from telegram_bot import stop_bot as _tg_stop_bot
     await _tg_stop_bot()
+    await save_state()
     if http_client:
         await http_client.aclose()
-
-# ── Telegram bot ─────────────────────────────────────────────────────────────
-from telegram_bot import start_bot as _tg_start_bot, stop_bot as _tg_stop_bot
 
 # ── Basic endpoints ──────────────────────────────────────────────────────────
 @app.get("/")
@@ -476,44 +516,6 @@ async def get_connections(_=Depends(require_auth)):
     return {"connections": result, "count": len(result)}
 
 # ── Link Management ──────────────────────────────────────────────────────────
-async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expires_at: str | None = None, note: str = "", sub_id: str | None = None, protocol: str = DEFAULT_PROTOCOL, fingerprint: str = DEFAULT_FINGERPRINT, alpn: str = "", port: int = DEFAULT_PORT, ip_limit: int = 0, speed_limit_bytes: int = 0, node_id: str | None = None) -> tuple[str, dict]:
-    if protocol not in PROTOCOLS:
-        protocol = DEFAULT_PROTOCOL
-    fingerprint = (fingerprint or DEFAULT_FINGERPRINT).strip().lower()
-    if fingerprint not in FINGERPRINTS:
-        fingerprint = DEFAULT_FINGERPRINT
-    uid = generate_uuid()
-    async with LINKS_LOCK:
-        LINKS[uid] = {
-            "label": (label or "لینک جدید").strip()[:60] or "لینک جدید",
-            "limit_bytes": max(0, limit_bytes),
-            "used_bytes": 0,
-            "created_at": datetime.now().isoformat(),
-            "active": True,
-            "expires_at": expires_at,
-            "note": (note or "").strip()[:200],
-            "is_default": False,
-            "sub_id": sub_id,
-            "protocol": protocol,
-            "fingerprint": fingerprint,
-            "alpn": (alpn or "").strip()[:100],
-            "port": port,
-            "ip_limit": max(0, ip_limit),
-            "speed_limit_bytes": max(0, speed_limit_bytes),
-            "node_id": node_id,
-        }
-    if sub_id:
-        async with SUBS_LOCK:
-            if sub_id in SUBS:
-                ids = SUBS[sub_id].setdefault("link_ids", [])
-                if uid not in ids:
-                    ids.append(uid)
-    if node_id:
-        await send_config_to_node(node_id, uid, LINKS[uid])
-    asyncio.create_task(save_state())
-    log_activity("link", f"کانفیگ «{LINKS[uid]['label']}» ساخته شد", "ok")
-    return uid, LINKS[uid]
-
 @app.post("/api/links")
 async def create_link(request: Request, _=Depends(require_auth)):
     body = await request.json()
