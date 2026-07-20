@@ -163,6 +163,20 @@ def generate_user_code() -> str:
     import string
     return ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
 
+def calculate_user_level(user_id: int) -> int:
+    """محاسبه سطح کاربری بر اساس تعداد خریدهای تایید شده"""
+    confirmed_orders = [o for o in ORDERS.values() if o.get("user_id") == user_id and o.get("status") == "confirmed"]
+    total_purchases = len(confirmed_orders)
+    if total_purchases >= 10:
+        return 10
+    elif total_purchases >= 5:
+        return 5
+    elif total_purchases >= 3:
+        return 3
+    elif total_purchases >= 1:
+        return 1
+    return 0
+
 def parse_size_to_bytes(value: float, unit: str) -> int:
     unit = unit.upper()
     if unit == "GB": return int(value * 1024 ** 3)
@@ -252,7 +266,7 @@ def vless_link_for_link(link: dict, uid: str, host: str) -> str:
     return generate_vless_link(uid, host, remark=f"Tk-Ui-{link.get('label','')}", protocol=link.get("protocol", "vless-ws"), fingerprint=link.get("fingerprint"), alpn=link.get("alpn"), port=link.get("port"))
 
 # ════════════════════════════════════════════════════════════════════════════
-#  توابع مورد نیاز برای ربات (که قبلاً در main نبودند)
+#  توابع مورد نیاز ربات (که قبلاً در main نبودند)
 # ════════════════════════════════════════════════════════════════════════════
 
 async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expires_at: str | None = None, note: str = "", sub_id: str | None = None, protocol: str = "vless-ws", fingerprint: str = "chrome", alpn: str = "", port: int = 443, ip_limit: int = 0, speed_limit_bytes: int = 0, node_id: str | None = None) -> tuple[str, dict]:
