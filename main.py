@@ -1,3 +1,4 @@
+# main.py - Tk-Ui v10 - بدون خطا
 import asyncio
 import json
 import os
@@ -11,7 +12,7 @@ from urllib.parse import quote
 from collections import deque, defaultdict
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import Response, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -250,35 +251,10 @@ def generate_vless_link(uuid: str, host: str, remark: str = "Tk-Ui", protocol: s
 def vless_link_for_link(link: dict, uid: str, host: str) -> str:
     return generate_vless_link(uid, host, remark=f"Tk-Ui-{link.get('label','')}", protocol=link.get("protocol", "vless-ws"), fingerprint=link.get("fingerprint"), alpn=link.get("alpn"), port=link.get("port"))
 
-# ── Node helper ──────────────────────────────────────────────────────────────
-async def send_config_to_node(node_id: str, uuid: str, link: dict) -> bool:
-    node = NODES.get(node_id)
-    if not node:
-        return False
-    url = f"http://{node['address']}:{node['port']}/api/config"
-    payload = {
-        "uuid": uuid,
-        "label": link.get("label"),
-        "limit_bytes": link.get("limit_bytes"),
-        "used_bytes": link.get("used_bytes", 0),
-        "expires_at": link.get("expires_at"),
-        "protocol": link.get("protocol"),
-        "fingerprint": link.get("fingerprint"),
-        "alpn": link.get("alpn"),
-        "port": link.get("port"),
-        "ip_limit": link.get("ip_limit"),
-        "speed_limit_bytes": link.get("speed_limit_bytes"),
-        "active": link.get("active", True),
-    }
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(url, json=payload)
-        return resp.status_code == 200
-    except Exception as e:
-        logger.warning(f"send_config_to_node error: {e}")
-        return False
+# ════════════════════════════════════════════════════════════════════════════
+#  توابع مورد نیاز برای ربات (که قبلاً در main نبودند)
+# ════════════════════════════════════════════════════════════════════════════
 
-# ── Link Management Functions ──────────────────────────────────────────────
 async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expires_at: str | None = None, note: str = "", sub_id: str | None = None, protocol: str = "vless-ws", fingerprint: str = "chrome", alpn: str = "", port: int = 443, ip_limit: int = 0, speed_limit_bytes: int = 0, node_id: str | None = None) -> tuple[str, dict]:
     if protocol not in ("vless-ws", "xhttp-packet-up", "xhttp-stream-up"):
         protocol = "vless-ws"
@@ -312,10 +288,83 @@ async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expi
                 if uid not in ids:
                     ids.append(uid)
     if node_id:
+        # ارسال به Node (اگر Node وجود داشته باشد)
         await send_config_to_node(node_id, uid, LINKS[uid])
     asyncio.create_task(save_state())
     log_activity("link", f"کانفیگ «{LINKS[uid]['label']}» ساخته شد", "ok")
     return uid, LINKS[uid]
+
+async def create_sub_group(name: str = "گروه جدید", desc: str = "", password: str = "") -> tuple[str, dict]:
+    name = (name or "گروه جدید").strip()[:60]
+    desc = (desc or "").strip()[:200]
+    password = (password or "").strip()
+    sub_id = generate_uuid()
+    uuid_key = secrets.token_urlsafe(16)
+    async with SUBS_LOCK:
+        SUBS[sub_id] = {
+            "name": name,
+            "desc": desc,
+            "password_hash": hash_password(password) if password else None,
+            "uuid_key": uuid_key,
+            "created_at": datetime.now().isoformat(),
+            "link_ids": [],
+        }
+    asyncio.create_task(save_state())
+    log_activity("sub", f"گروه «{name}» ساخته شد", "ok")
+    return sub_id, SUBS[sub_id]
+
+async def set_link_sub(uid: str, sub_id: str | None) -> bool:
+    async with LINKS_LOCK:
+        if uid not in LINKS:
+            return False
+        old_sub = LINKS[uid].get("sub_id")
+        label = LINKS[uid].get("label", uid)
+    if sub_id is not None:
+        async with SUBS_LOCK:
+            if sub_id not in SUBS:
+                return False
+    async with SUBS_LOCK:
+        if old_sub and old_sub in SUBS:
+            ids = SUBS[old_sub].get("link_ids", [])
+            if uid in ids:
+                ids.remove(uid)
+        if sub_id and sub_id in SUBS:
+            ids = SUBS[sub_id].setdefault("link_ids", [])
+            if uid not in ids:
+                ids.append(uid)
+    async with LINKS_LOCK:
+        if uid in LINKS:
+            LINKS[uid]["sub_id"] = sub_id
+    asyncio.create_task(save_state())
+    log_activity("link", f"کانفیگ «{label}» {'به گروه اضافه شد' if sub_id else 'از گروه خارج شد'}", "info")
+    return True
+
+async def send_config_to_node(node_id: str, uuid: str, link: dict) -> bool:
+    node = NODES.get(node_id)
+    if not node:
+        return False
+    url = f"http://{node['address']}:{node['port']}/api/config"
+    payload = {
+        "uuid": uuid,
+        "label": link.get("label"),
+        "limit_bytes": link.get("limit_bytes"),
+        "used_bytes": link.get("used_bytes", 0),
+        "expires_at": link.get("expires_at"),
+        "protocol": link.get("protocol"),
+        "fingerprint": link.get("fingerprint"),
+        "alpn": link.get("alpn"),
+        "port": link.get("port"),
+        "ip_limit": link.get("ip_limit"),
+        "speed_limit_bytes": link.get("speed_limit_bytes"),
+        "active": link.get("active", True),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, json=payload)
+        return resp.status_code == 200
+    except Exception as e:
+        logger.warning(f"send_config_to_node error: {e}")
+        return False
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 connections: dict = {}
@@ -397,7 +446,7 @@ async def save_state():
         except Exception as e:
             logger.warning(f"Could not save state: {e}")
 
-# ── Startup / Shutdown ────────────────────────────────────────────────────────
+# ── Startup / Shutdown ──────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
     global http_client
@@ -405,7 +454,7 @@ async def startup():
     timeout = httpx.Timeout(30.0, connect=10.0)
     http_client = httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True)
     await load_state()
-    # ✅ ربات را اینجا شروع کن تا از خطای واردات حلقوی جلوگیری شود
+    # ✅ import داخل تابع برای جلوگیری از import حلقوی
     from telegram_bot import start_bot as _tg_start_bot
     await _tg_start_bot()
     log_activity("system", "سرور راه‌اندازی شد", "ok")
@@ -413,7 +462,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    # ✅ ربات را اینجا متوقف کن
+    # ✅ import داخل تابع
     from telegram_bot import stop_bot as _tg_stop_bot
     await _tg_stop_bot()
     await save_state()
@@ -608,8 +657,12 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
             sv = float(body.get("speed_limit_value") or 0)
             su = body.get("speed_limit_unit") or "MBIT"
             link["speed_limit_bytes"] = 0 if sv <= 0 else parse_speed_to_bytes(sv, su)
-            from speed_limit import reset_bucket
-            reset_bucket(uid)
+            # ریست bucket سرعت
+            try:
+                from speed_limit import reset_bucket
+                reset_bucket(uid)
+            except ImportError:
+                pass
         new_node = body.get("node_id", "UNCHANGED")
         if new_node != "UNCHANGED":
             link["node_id"] = new_node or None
