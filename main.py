@@ -1,4 +1,4 @@
-# main.py - Tk-Ui v10 - بدون خطا
+# main.py - Tk-Ui v10 - با پشتیبانی از UDP خالص از طریق Node
 import asyncio
 import json
 import os
@@ -266,7 +266,7 @@ def vless_link_for_link(link: dict, uid: str, host: str) -> str:
     return generate_vless_link(uid, host, remark=f"Tk-Ui-{link.get('label','')}", protocol=link.get("protocol", "vless-ws"), fingerprint=link.get("fingerprint"), alpn=link.get("alpn"), port=link.get("port"))
 
 # ════════════════════════════════════════════════════════════════════════════
-#  توابع مورد نیاز ربات (که قبلاً در main نبودند)
+#  توابع مورد نیاز ربات
 # ════════════════════════════════════════════════════════════════════════════
 
 async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expires_at: str | None = None, note: str = "", sub_id: str | None = None, protocol: str = "vless-ws", fingerprint: str = "chrome", alpn: str = "", port: int = 443, ip_limit: int = 0, speed_limit_bytes: int = 0, node_id: str | None = None) -> tuple[str, dict]:
@@ -302,7 +302,6 @@ async def make_link(label: str = "لینک جدید", limit_bytes: int = 0, expi
                 if uid not in ids:
                     ids.append(uid)
     if node_id:
-        # ارسال به Node (اگر Node وجود داشته باشد)
         await send_config_to_node(node_id, uid, LINKS[uid])
     asyncio.create_task(save_state())
     log_activity("link", f"کانفیگ «{LINKS[uid]['label']}» ساخته شد", "ok")
@@ -354,6 +353,7 @@ async def set_link_sub(uid: str, sub_id: str | None) -> bool:
     return True
 
 async def send_config_to_node(node_id: str, uuid: str, link: dict) -> bool:
+    """ارسال کانفیگ به Node از طریق API داخلی Marzban-node"""
     node = NODES.get(node_id)
     if not node:
         return False
@@ -468,17 +468,21 @@ async def startup():
     timeout = httpx.Timeout(30.0, connect=10.0)
     http_client = httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True)
     await load_state()
-    # ✅ import داخل تابع برای جلوگیری از import حلقوی
-    from telegram_bot import start_bot as _tg_start_bot
-    await _tg_start_bot()
+    try:
+        from telegram_bot import start_bot as _tg_start_bot
+        await _tg_start_bot()
+    except Exception as e:
+        logger.warning(f"Telegram bot start failed: {e}")
     log_activity("system", "سرور راه‌اندازی شد", "ok")
     logger.info(f"Tk-Ui v10 started on port {CONFIG['port']}")
 
 @app.on_event("shutdown")
 async def shutdown():
-    # ✅ import داخل تابع
-    from telegram_bot import stop_bot as _tg_stop_bot
-    await _tg_stop_bot()
+    try:
+        from telegram_bot import stop_bot as _tg_stop_bot
+        await _tg_stop_bot()
+    except Exception as e:
+        logger.warning(f"Telegram bot stop failed: {e}")
     await save_state()
     if http_client:
         await http_client.aclose()
@@ -671,7 +675,6 @@ async def update_link(uid: str, request: Request, _=Depends(require_auth)):
             sv = float(body.get("speed_limit_value") or 0)
             su = body.get("speed_limit_unit") or "MBIT"
             link["speed_limit_bytes"] = 0 if sv <= 0 else parse_speed_to_bytes(sv, su)
-            # ریست bucket سرعت
             try:
                 from speed_limit import reset_bucket
                 reset_bucket(uid)
